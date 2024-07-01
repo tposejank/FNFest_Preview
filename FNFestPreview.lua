@@ -10,10 +10,10 @@ eventsHash=""
 trackSpeed=2
 inst=1
 diff=4
-pixelsDrumline = 5
-hopothresh = 170 -- ticks
 guitarSoloP = 103
 trillP = 127
+curOdPhrase = 0
+beatLineTimes = false
 pR={
 	{{60,64},{66,69}},
 	{{72,76},{78,81}},
@@ -42,6 +42,7 @@ notes_that_apply_as_tom_markable = {
 oP=116 --overdrive pitch
 offset=0
 notes={}
+od_phrases = {}
 solo_markers = {}
 trills = {}
 beatLines={}
@@ -55,6 +56,32 @@ nxoff=152 --x offset
 nxm=0.05 --x mult of offset
 nyoff=192 --y offset
 nsm=0.05 --scale multiplier
+
+options = {
+	{'Pro Colors for all Parts', true, 'toggle', true},
+	{'Enhanced Invalid Chords', true, 'toggle', true},
+	{'Enhanced Invalid Chords Thresh', 30, 'stepper', 0, 1, 1},
+	{'Invalid Taps Detection', true, 'toggle', true},
+	{'Drum Line Pixel Height', 5, 'stepper', 0, 1, 1},
+	{'HOPO Ticks Threshold', 170, 'stepper', 0, 1, 1},
+	{'Overdrive Lines Pixel Width', 5, 'stepper', 0, 0, 1},
+	{'Track Speed', 2.00, 'stepper', 0, 0.25, 0.25},
+	{'Offset', 0, 'stepper', 0, -10, 0.01},
+	{'Show Beat Line Times', true, 'toggle', true},
+	{'Minify UI', false, 'toggle', false}
+}
+option_curselected = 1
+
+proColorsForAllParts = options[1][2]
+enhancedInvalidChords = options[2][2]
+enhancedInvalidChordsThresh = options[3][2]
+checkForInvalidChords = options[4][2]
+checkForExtendedSustains = options[4][2]
+pixelsDrumline = options[5][2]
+hopothresh = options[6][2] -- ticks
+pixelsOdLines = options[7][2]
+
+minifyui = options[11][2]
 
 lastCursorTime=reaper.GetCursorPosition()
 
@@ -104,6 +131,15 @@ function previousNote(take, index, minpitch, maxpitch)
 	return {lastspos, lastepos, lastpitch}
 end
 
+function contains(table, element)
+	for _, value in pairs(table) do
+	  	if value == element then
+			return true
+	  	end
+	end
+	return false
+end
+
 function findTrack(trackName)
 	local numTracks = reaper.CountTracks(0)
 	for i = 0, numTracks - 1 do
@@ -114,6 +150,15 @@ function findTrack(trackName)
 		end
 	end
 	return nil
+end
+
+function breakTime()
+	if #notes > 2 and curNote > 1 then
+		return (notes[curNote][10] - notes[curNote - 1][11]) / 4
+	elseif #notes > 0 then
+		return notes[1][10] -- break at the start
+	end
+	return 0
 end
 
 gfx.clear = rgb2num(42, 0, 71)
@@ -164,6 +209,32 @@ cymbal_blue = gfx.loadimg(28,script_folder.."assets/note_dcymblu.png")
 cymbal_green = gfx.loadimg(29,script_folder.."assets/note_dcymgre.png")
 cymbal_o = gfx.loadimg(30,script_folder.."assets/cym_o.png")
 cymbal_invalid = gfx.loadimg(31,script_folder.."assets/cym_invalid.png")
+
+lift_green = gfx.loadimg(32,script_folder.."assets/lift_green.png")
+lift_red = gfx.loadimg(33,script_folder.."assets/lift_red.png")
+lift_yellow = gfx.loadimg(34,script_folder.."assets/lift_yellow.png")
+lift_blue = gfx.loadimg(35,script_folder.."assets/lift_blue.png")
+lift_orange = gfx.loadimg(36,script_folder.."assets/lift_orange.png")
+
+toggleswitch_on = gfx.loadimg(37,script_folder.."assets/toggle/on.png")
+toggleswitch_off = gfx.loadimg(38,script_folder.."assets/toggle/off.png")
+toggleswitch_selected = gfx.loadimg(39,script_folder.."assets/toggle/selected.png")
+
+stepper = gfx.loadimg(40,script_folder.."assets/toggle/stepper.png")
+stepper_left = gfx.loadimg(41,script_folder.."assets/toggle/left.png")
+stepper_right = gfx.loadimg(43,script_folder.."assets/toggle/right.png")
+stepper_left_s = gfx.loadimg(42,script_folder.."assets/toggle/left_selected.png")
+stepper_right_s = gfx.loadimg(44,script_folder.."assets/toggle/right_selected.png")
+stepper_selected = gfx.loadimg(45,script_folder.."assets/toggle/stepper_selected.png")
+
+keybind1 = gfx.loadimg(46,script_folder.."assets/toggle/brackets.png")
+keybind2 = gfx.loadimg(47,script_folder.."assets/toggle/quotes.png")
+keybind3 = gfx.loadimg(48,script_folder.."assets/toggle/arrows.png")
+keybind4 = gfx.loadimg(49,script_folder.."assets/toggle/arrows_ud.png")
+keybind5 = gfx.loadimg(50,script_folder.."assets/toggle/eight_five.png")
+keybind7 = gfx.loadimg(52,script_folder.."assets/toggle/enter.png")
+keybind8 = gfx.loadimg(53,script_folder.."assets/toggle/f1.png")
+keybind6 = gfx.loadimg(51,script_folder.."assets/toggle/four_siz.png")
 
 instrumentTracks={
 	{"Drums",findTrack("PART DRUMS")},
@@ -237,6 +308,20 @@ function parseNotes(take)
 			valid=true
 			hopo = false
 			lane = pitch - pR[diff][1][1]
+
+			if i > 1 and not isplastic and enhancedInvalidChords then -- sub invalid chord detection
+				local prevNote = previousNote(take, i, pR[diff][1][1], pR[diff][1][2])
+
+				if prevNote ~= nil then
+					if (contains({0, 1}, prevNote[3] - pR[diff][1][1]) and contains({0, 1}, lane)) 
+					or (contains({2, 3, 4}, prevNote[3] - pR[diff][1][1]) and contains({2, 3, 4}, lane)) then
+						if spos - prevNote[1] < enhancedInvalidChordsThresh then -- ticks
+							valid = false
+						end
+					end
+				end
+			end
+
 			noteIndex = getNoteIndex(ntime, lane)
 			if noteIndex ~= -1 then
 				if nendbeats-ntimebeats<0.33 and notes[noteIndex][2]==nend-ntime then
@@ -272,7 +357,7 @@ function parseNotes(take)
 				end
 
 				-- hopo, tom
-				table.insert(notes, { ntime, nend - ntime, lane, false, false, valid , nendbeats- ntimebeats, hopo, false}) 
+				table.insert(notes, { ntime, nend - ntime, lane, false, false, valid , nendbeats- ntimebeats, hopo, false, ntimebeats, nendbeats}) 
 			end
 		elseif pitch >= pR[diff][2][1] and pitch <= pR[diff][2][2] and not isplastic then
 			lane = pitch - pR[diff][2][1]
@@ -283,7 +368,7 @@ function parseNotes(take)
 					notes[noteIndex][6] = false
 				end
 			else -- lifts cant be hopos or toms
-				table.insert(notes, { ntime, nend - ntime, lane, true, false, false, nendbeats- ntimebeats, false, false})
+				table.insert(notes, { ntime, nend - ntime, lane, true, false, false, nendbeats- ntimebeats, false, false, ntimebeats, nendbeats})
 			end
 		elseif pitch == plasticEventRanges[diff][1][1] and isplastic then -- hopo force
 			table.insert(hopo_forces, {ntime, nend})
@@ -312,56 +397,58 @@ function parseNotes(take)
 		end
 	end
 
-	if #hopo_forces ~= 0 then
-		for i=1,#notes do
-			if notes[i][1]>hopo_forces[cur_hopo_force][2] then
-				if cur_hopo_force<#hopo_forces then cur_hopo_force=cur_hopo_force+1 end
-			end
-			if notes[i][1]>=hopo_forces[cur_hopo_force][1] and notes[i][1]<hopo_forces[cur_hopo_force][2] then
-				notes[i][8]=true
-			end
-		end
-	end
-
-	if #strum_forces ~= 0 then
-		for i=1,#notes do
-			if notes[i][1]>strum_forces[cur_strum_force][2] then
-				if cur_strum_force<#strum_forces then cur_strum_force=cur_strum_force+1 end
-			end
-			if notes[i][1]>=strum_forces[cur_strum_force][1] and notes[i][1]<strum_forces[cur_strum_force][2] then
-				notes[i][8]=false -- reset hopo to false
-			end
-		end
-	end
-
-	if #tom_yellow_forces ~= 0 then
-		for i=1,#notes do
-			if notes[i][1] > tom_yellow_forces[cur_tom_yellow_force][2] then if cur_tom_yellow_force < #tom_yellow_forces then cur_tom_yellow_force = cur_tom_yellow_force + 1 end end
-			if notes[i][1] >= tom_yellow_forces[cur_tom_yellow_force][1] and notes[i][1] < tom_yellow_forces[cur_tom_yellow_force][2] then
-				if notes[i][3] == notes_that_apply_as_tom_markable[diff][1] then
-					notes[i][9]=true
+	if isplastic then
+		if #hopo_forces ~= 0 then
+			for i=1,#notes do
+				if notes[i][1]>hopo_forces[cur_hopo_force][2] then
+					if cur_hopo_force<#hopo_forces then cur_hopo_force=cur_hopo_force+1 end
+				end
+				if notes[i][1]>=hopo_forces[cur_hopo_force][1] and notes[i][1]<hopo_forces[cur_hopo_force][2] then
+					notes[i][8]=true
 				end
 			end
 		end
-	end
-
-	if #tom_blue_forces ~= 0 then
-		for i=1,#notes do
-			if notes[i][1] > tom_blue_forces[cur_tom_blue_force][2] then if cur_tom_blue_force < #tom_blue_forces then cur_tom_blue_force = cur_tom_blue_force + 1 end end
-			if notes[i][1] >= tom_blue_forces[cur_tom_blue_force][1] and notes[i][1] < tom_blue_forces[cur_tom_blue_force][2] then
-				if notes[i][3] == notes_that_apply_as_tom_markable[diff][2] then
-					notes[i][9]=true
+	
+		if #strum_forces ~= 0 then
+			for i=1,#notes do
+				if notes[i][1]>strum_forces[cur_strum_force][2] then
+					if cur_strum_force<#strum_forces then cur_strum_force=cur_strum_force+1 end
+				end
+				if notes[i][1]>=strum_forces[cur_strum_force][1] and notes[i][1]<strum_forces[cur_strum_force][2] then
+					notes[i][8]=false -- reset hopo to false
 				end
 			end
 		end
-	end
-
-	if #tom_green_forces ~= 0 then
-		for i=1,#notes do
-			if notes[i][1] > tom_green_forces[cur_tom_green_force][2] then if cur_tom_green_force < #tom_green_forces then cur_tom_green_force = cur_tom_green_force + 1 end end
-			if notes[i][1] >= tom_green_forces[cur_tom_green_force][1] and notes[i][1] < tom_green_forces[cur_tom_green_force][2] then
-				if notes[i][3] == notes_that_apply_as_tom_markable[diff][3] then
-					notes[i][9]=true
+	
+		if #tom_yellow_forces ~= 0 then
+			for i=1,#notes do
+				if notes[i][1] > tom_yellow_forces[cur_tom_yellow_force][2] then if cur_tom_yellow_force < #tom_yellow_forces then cur_tom_yellow_force = cur_tom_yellow_force + 1 end end
+				if notes[i][1] >= tom_yellow_forces[cur_tom_yellow_force][1] and notes[i][1] < tom_yellow_forces[cur_tom_yellow_force][2] then
+					if notes[i][3] == notes_that_apply_as_tom_markable[diff][1] then
+						notes[i][9]=true
+					end
+				end
+			end
+		end
+	
+		if #tom_blue_forces ~= 0 then
+			for i=1,#notes do
+				if notes[i][1] > tom_blue_forces[cur_tom_blue_force][2] then if cur_tom_blue_force < #tom_blue_forces then cur_tom_blue_force = cur_tom_blue_force + 1 end end
+				if notes[i][1] >= tom_blue_forces[cur_tom_blue_force][1] and notes[i][1] < tom_blue_forces[cur_tom_blue_force][2] then
+					if notes[i][3] == notes_that_apply_as_tom_markable[diff][2] then
+						notes[i][9]=true
+					end
+				end
+			end
+		end
+	
+		if #tom_green_forces ~= 0 then
+			for i=1,#notes do
+				if notes[i][1] > tom_green_forces[cur_tom_green_force][2] then if cur_tom_green_force < #tom_green_forces then cur_tom_green_force = cur_tom_green_force + 1 end end
+				if notes[i][1] >= tom_green_forces[cur_tom_green_force][1] and notes[i][1] < tom_green_forces[cur_tom_green_force][2] then
+					if notes[i][3] == notes_that_apply_as_tom_markable[diff][3] then
+						notes[i][9]=true
+					end
 				end
 			end
 		end
@@ -370,7 +457,7 @@ function parseNotes(take)
 	table.sort(notes,notesCompare)
 
 	--illegal chords check
-	if not isplastic then
+	if checkForInvalidChords and not isplastic then
 		for i=1,#notes do
 			ntime=notes[i][1]
 			lane=notes[i][3]
@@ -394,72 +481,74 @@ function parseNotes(take)
 		end
 	end
 	--extended sustain check
-	sustain=false
-	sustain_idx=-1
-	sustain_start=-1
-	sustain_end=-1
-	for i=1,#notes do
-		ntime=notes[i][1]
-		if ntime>=sustain_end then 
-			sustain=false
-			sustain_idx=-1
-			sustain_start=-1
-			sustain_end=-1
-		end
-		nlen=notes[i][2]
-		nlenbeats=notes[i][7]
-		nend=ntime+notes[i][2]
-		lane=notes[i][3]
-		if sustain==true then
-			if ntime<sustain_end then
-				if ntime~=sustain_start or nend~=sustain_end then
-					notes[i][6]=false
-					notes[sustain_idx][6]=false
+	if checkForExtendedSustains then
+		sustain=false
+		sustain_idx=-1
+		sustain_start=-1
+		sustain_end=-1
+		for i=1,#notes do
+			ntime=notes[i][1]
+			if ntime>=sustain_end then 
+				sustain=false
+				sustain_idx=-1
+				sustain_start=-1
+				sustain_end=-1
+			end
+			nlen=notes[i][2]
+			nlenbeats=notes[i][7]
+			nend=ntime+notes[i][2]
+			lane=notes[i][3]
+			if sustain==true then
+				if ntime<sustain_end then
+					if ntime~=sustain_start or nend~=sustain_end then
+						notes[i][6]=false
+						notes[sustain_idx][6]=false
+					end
+				end
+			else
+				if nlenbeats>=0.33 then
+					sustain=true
+					sustain_start=ntime
+					sustain_end=nend
+					sustain_idx=i
 				end
 			end
-		else
-			if nlenbeats>=0.33 then
-				sustain=true
-				sustain_start=ntime
-				sustain_end=nend
-				sustain_idx=i
+			
+		end
+		table.sort(notes,notesCompareFlip)
+		sustain=false
+		sustain_idx=-1
+		sustain_start=-1
+		sustain_end=-1
+		for i=1,#notes do
+			ntime=notes[i][1]
+			if ntime>=sustain_end then 
+				sustain=false
+				sustain_idx=-1
+				sustain_start=-1
+				sustain_end=-1
 			end
-		end
-		
-	end
-	table.sort(notes,notesCompareFlip)
-	sustain=false
-	sustain_idx=-1
-	sustain_start=-1
-	sustain_end=-1
-	for i=1,#notes do
-		ntime=notes[i][1]
-		if ntime>=sustain_end then 
-			sustain=false
-			sustain_idx=-1
-			sustain_start=-1
-			sustain_end=-1
-		end
-		nlen=notes[i][2]
-		nlenbeats=notes[i][7]
-		nend=ntime+notes[i][2]
-		lane=notes[i][3]
-		if sustain==true then
-			if ntime<sustain_end then
-				if ntime~=sustain_start or nend~=sustain_end then
-					notes[i][6]=false
-					notes[sustain_idx][6]=false
+			nlen=notes[i][2]
+			nlenbeats=notes[i][7]
+			nend=ntime+notes[i][2]
+			lane=notes[i][3]
+			if sustain==true then
+				if ntime<sustain_end then
+					if ntime~=sustain_start or nend~=sustain_end then
+						notes[i][6]=false
+						notes[sustain_idx][6]=false
+					end
+				end
+			else
+				if nlenbeats>=0.33 then
+					sustain=true
+					sustain_start=ntime
+					sustain_end=nend
+					sustain_idx=i
 				end
 			end
-		else
-			if nlenbeats>=0.33 then
-				sustain=true
-				sustain_start=ntime
-				sustain_end=nend
-				sustain_idx=i
-			end
+			
 		end
-		
 	end
 	--set all notes at time to invalid if one is
 	for i=1,#notes do
@@ -577,6 +666,7 @@ function drawNotes()
 	isplastic = inst >= 5
 	isprodrums = inst == 5
 	isexpert = diff == 4
+	isriffmaster = inst >= 6
 	for i=curNote,#notes do
 		invalid=false
 		ntime=notes[i][1]
@@ -635,7 +725,7 @@ function drawNotes()
 		if rend>=-0.05 then
 			gfxid=2
 
-			if isplastic then gfxid = 11 + notedata end
+			if isplastic or proColorsForAllParts then gfxid = 11 + notedata end
 
 			if notedata == 0 and isprodrums then
 				gfxid = 21
@@ -653,7 +743,7 @@ function drawNotes()
 				gfxid = 11
 			end
 
-			if lift then gfxid=4 end 
+			if lift then gfxid= proColorsForAllParts and (32 + notedata) or 4 end 
 			if hopo then gfxid = 16 + notedata end
 
 			if isprodrums then
@@ -669,12 +759,14 @@ function drawNotes()
 			end
 
 			if od then 
-				if not isplastic then
+				if not (isplastic or proColorsForAllParts) then
 					gfxid=gfxid+1
 				else
 					-- this is a plastic instrument
 					gfxid = 3
-					if hopo then
+					if lift then
+						gfxid = 5
+					elseif hopo then
 						gfxid = 9
 					elseif tom then
 						gfxid = 25
@@ -688,16 +780,16 @@ function drawNotes()
 				-- add plastic case here
 				gfx.r, gfx.g, gfx.b=0.72,.3,1
 
-				if isplastic then
-					if lane == 0 then -- green lane
+				if isplastic or proColorsForAllParts then
+					if notedata == 0 then -- green lane
 						gfx.r, gfx.g, gfx.b=0.14,.59,.34
-					elseif lane == 1 then -- red lane
+					elseif notedata == 1 then -- red lane
 						gfx.r, gfx.g, gfx.b=0.57,0,.16
-					elseif lane == 2 then -- yellow lane
+					elseif notedata == 2 then -- yellow lane
 						gfx.r, gfx.g, gfx.b=0.77,.65,.2
-					elseif lane == 3 then -- blue lane
+					elseif notedata == 3 then -- blue lane
 						gfx.r, gfx.g, gfx.b=0.18,.3,.83
-					elseif lane == 4 then -- orange lane
+					elseif notedata == 4 then -- orange lane
 						gfx.r, gfx.g, gfx.b=0.78,.55,.16
 						if isprodrums then -- green if pro drums is active, anyway
 							gfx.r, gfx.g, gfx.b=0.14,.59,.34
@@ -740,6 +832,70 @@ function drawNotes()
 			gfx.blit(gfxid,noteScale,0,0,0,widthNote,64,notex,notey)
 		end
 	end
+
+	for i=curOdPhrase,#od_phrases do
+		local ntime=od_phrases[i][1]
+		local nlen=od_phrases[i][2]-ntime
+
+		if not (ntime+nlen<curTime) then
+			if ntime>curTime+(4/(trackSpeed+2)) then break end
+			rtime=((ntime-curTime)*(trackSpeed+2))
+			rend=(((ntime+nlen)-curTime)*(trackSpeed+2))
+			if rtime<0 then rtime=0 end
+			if rend>4 then
+				rend=4
+			end
+			lane = -0.75
+			if not isexpert then
+				lane = 0
+			end
+			if isriffmaster then
+				lane = -0.75
+			end
+			if isprodrums then
+				lane = 0
+			end
+			
+			noteScale=imgScale*(1-(nsm*rtime))
+			noteScaleEnd=imgScale*(1-(nsm*rend))
+			-- not plastic case
+				-- not pro drums case
+
+			notex=((gfx.w/2)-(64*noteScale)+((nxoff*(1-(nxm*rtime)))*noteScale*(lane-2)))
+			notey=gfx.h-(32*noteScale)-(248*noteScale)-((nyoff*rtime)*noteScale)
+			susx=((gfx.w/2)+((nxoff*(1-(nxm*rtime)))*noteScale*(lane-2)))
+			susy=gfx.h-(248*noteScale)-((nyoff*rtime)*noteScale)
+			endx=((gfx.w/2)+((nxoff*(1-(nxm*rend)))*noteScaleEnd*(lane-2)))
+			endy=gfx.h-(248*noteScaleEnd)-((nyoff*rend)*noteScaleEnd)
+			lane = 4.75
+			if not isexpert then
+				lane = 4
+			end
+			if isriffmaster then
+				lane = 4.75
+			end
+			if isprodrums then
+				lane = 4
+			end
+			susx2=((gfx.w/2)+((nxoff*(1-(nxm*rtime)))*noteScale*(lane-2)))
+			susy2=gfx.h-(248*noteScale)-((nyoff*rtime)*noteScale)
+			endx2=((gfx.w/2)+((nxoff*(1-(nxm*rend)))*noteScaleEnd*(lane-2)))
+			endy2=gfx.h-(248*noteScaleEnd)-((nyoff*rend)*noteScaleEnd)
+			
+			if rend>=-0.05 then
+				gfx.r, gfx.g, gfx.b=.53,.6,.77
+				-- draws sustain with the appropiate color
+				for i=0,pixelsOdLines do
+					gfx.line(susx+i,susy,endx+i,endy)
+					gfx.line(susx2+i,susy2,endx2+i,endy2)
+				end
+
+				gfx.r, gfx.g, gfx.b=1,1,1
+
+				gfx.blit(21,noteScale,0,0,0,128,64,notex,notey)
+			end
+		end
+	end
 end
 
 function drawBeats()
@@ -771,6 +927,14 @@ function drawBeats()
 			gfx.line(sx-1,y+1,ex+1,y+1)
 		end
 		gfx.r,gfx.g,gfx.b=1,1,1
+		if beatLineTimes then
+			gfx.setfont(1, "Arial", 15)
+			strx,stry = gfx.measurestr(btime)
+
+			gfx.x = sx - (strx + 10)
+			gfx.y = y - 7
+			gfx.drawstr(btime)
+		end
 	end
 end
 
@@ -792,6 +956,43 @@ updateEvents()
 updateBeatLines()
 
 keyBinds={
+	[52]=function()
+		if options[option_curselected][3] == 'stepper' and showHelp then
+			options[option_curselected][4] = 0
+		end
+	end,
+	[54]=function()
+		if options[option_curselected][3] == 'stepper' and showHelp then
+			options[option_curselected][4] = 1
+		end
+	end,
+	[53]=function()
+		if showHelp then
+			option_curselected = option_curselected+1
+			if option_curselected>#options then option_curselected = 1 end
+		end
+	end,
+	[56]=function()
+		if showHelp then
+			option_curselected = option_curselected-1
+			if option_curselected<1 then option_curselected = #options end
+		end
+	end,
+	[13]=function()
+		curoption = options[option_curselected]
+		if curoption[3] == 'toggle' and showHelp then
+			options[option_curselected][2] = not options[option_curselected][2]
+		elseif curoption[3] == 'stepper' and showHelp then
+			if curoption[4] == 1 then
+				options[option_curselected][2] = options[option_curselected][2] + options[option_curselected][6]
+			else
+				options[option_curselected][2] = options[option_curselected][2] - options[option_curselected][6]
+				if options[option_curselected][2] < options[option_curselected][5] then
+					options[option_curselected][2] = options[option_curselected][5]
+				end
+			end
+		end
+	end,
 	[59]=function()
 		if diff==1 then diff=4 else diff=diff-1 end
 		midiHash=""
@@ -811,21 +1012,6 @@ keyBinds={
 		if inst==7 then inst=1 else inst=inst+1 end
 		midiHash=""
 		updateMidi()
-	end,
-	[43]=function()
-		trackSpeed = trackSpeed+0.25
-	end,
-	[61]=function()
-		trackSpeed = trackSpeed+0.25
-	end,
-	[45]=function()
-		if trackSpeed>0.25 then trackSpeed = trackSpeed-0.25 end
-	end,
-	[125]=function()
-		offset = offset+0.01
-	end,
-	[123]=function()
-		offset = offset-0.01
 	end,
 	[32]=function()
 		if reaper.GetPlayState()==1 then
@@ -912,6 +1098,13 @@ local function Main()
 			break
 		end
 	end
+	curOdPhrase=1
+	for i=1,#od_phrases do
+		if od_phrases[i][1] <= curTime then
+			curOdPhrase = i
+		end
+	end
+
 	curTimeLine=1
 	for i=1,#beatLines do
 		curTimeLine=i
@@ -939,31 +1132,45 @@ local function Main()
 	drawNotes()
 	gfx.x,gfx.y=0,0
 	gfx.setfont(1, "Arial", 20)
-	gfx.drawstr(string.format(
-		[[%s %s
-		Note: %d/%d
-		Current Time: %.03f
-		Snap: %s
-		Track Speed: %.02f
-		Offset: %.02f
-		]],
-		diffNames[diff],
-		instrumentTracks[inst][1],
-		curNote,
-		tostring(#notes),
-		curTime,
-		toFractionString(quants[movequant]),
-		trackSpeed,
-		offset
-	))
-	gfx.x,gfx.y=0,gfx.h-20
+	if not minifyui then
+			gfx.drawstr(string.format(
+			[[%s %s
+			Note: %d/%d
+			Current Time: %.03f
+			Snap: %s
+			Track Speed: %.02f
+			Offset: %.02f
+			]],
+			diffNames[diff],
+			instrumentTracks[inst][1],
+			curNote,
+			tostring(#notes),
+			curTime,
+			toFractionString(quants[movequant]),
+			trackSpeed,
+			offset
+		))
+	else
+		gfx.drawstr(string.format(
+			[[%s %s
+			]],
+			diffNames[diff],
+			instrumentTracks[inst][1]
+		))
+	end
+	if minifyui then gfx.setfont(1, "Arial", 15) end
+	gfx.x,gfx.y=0,gfx.h-15
+	versionstr = string.format("Version %s",version_num)
+	if minifyui then versionstr = string.format("v%s",version_num) end
+	gfx.drawstr(versionstr)
 	gfx.setfont(1, "Arial", 20)
-	gfx.drawstr(string.format("Version %s",version_num))
-	strx,stry=gfx.measurestr("Press F1 for controls")
-	gfx.x,gfx.y=gfx.w-strx,gfx.h-stry
-	gfx.drawstr("Press F1 for controls")
+	if not minifyui then
+		strx,stry=gfx.measurestr("Press F1 for controls")
+		gfx.x,gfx.y=gfx.w-strx,gfx.h-stry
+		gfx.drawstr("Press F1 for controls")
+	end
 
-	if isriffmaster then
+	if isriffmaster and not minifyui then
 		hopostr = "HOPO Thresh: "..hopothresh..' ticks'
 		strx,stry=gfx.measurestr(hopostr)
 		gfx.x,gfx.y=(gfx.w/2)-(strx/2),0
@@ -984,22 +1191,120 @@ local function Main()
 		gfx.drawstr(solostr)
 	end
 
+	local btime = breakTime()
+	if btime > 3 then
+		local measuresNextNote = reaper.TimeMap2_timeToQN(0, curTime) / 4
+		local toMeasureTime = notes[curNote][10] / 4
+
+		local measuresLeft = math.floor((toMeasureTime-measuresNextNote))
+		if measuresLeft < 0 then
+			measuresLeft = 0
+		end
+
+		strx,stry=gfx.measurestr(measuresLeft)
+
+		gfx.x,gfx.y=(gfx.w/2)-(strx/2),gfx.h - 100
+		gfx.drawstr(measuresLeft)
+	end
+
+	proColorsForAllParts = options[1][2]
+	enhancedInvalidChords = options[2][2]
+	enhancedInvalidChordsThresh = options[3][2]
+	checkForInvalidChords = options[4][2]
+	checkForExtendedSustains = options[4][2]
+	pixelsDrumline = options[5][2]
+	hopothresh = options[6][2]
+	pixelsOdLines = options[7][2]
+	trackSpeed = options[8][2]
+	offset = options[9][2]
+	beatLineTimes = options[10][2]
+	minifyui = options[11][2]
+
 	if showHelp then
 		gfx.mode=0
 		gfx.r,gfx.g,gfx.b,gfx.a=0,0,0,0.75
 		gfx.rect(0,0,gfx.w,gfx.h)
 		gfx.r,gfx.g,gfx.b,gfx.a=1,1,1,1
 		gfx.x,gfx.y=0,320*imgScale
-		gfx.drawstr([[Keybinds
-		 
-		Change instrument: [ / ]
-		Change difficulty: ; / '
-		Change track speed: + / -
-		Change offset: { / } (Shift + [ / ])
-		Change snap: left / right arrows
-		Change HOPO Thresh: 9 / 0 (Shift: x10)
-		Scroll: up/down arrow keys
-		]],1,gfx.w,gfx.h)
+
+		for i=1, #options do
+			--if options[i][3] == 'stepper' then break end
+
+			initialY = 20
+
+			if option_curselected == i and options[i][3] == 'stepper' then
+				gfx.blit(51, 1, 0, 0, 0, 128, 128, 235, 425)
+				gfx.x = 294
+				gfx.y = 425 + 16
+				gfx.drawstr('Stepper: Change Direction')
+			end
+
+			gfx.x = 30
+			gfx.y = initialY + (30 * (i - 1))
+
+			optx = gfx.w - (30 + 53)
+			opty = (initialY - 18) + (30 * (i - 1))
+
+			gfx.drawstr(options[i][1])
+
+			if options[i][3] == 'toggle' then
+				gfx.blit(options[i][2] and 37 or 38, 1, 0, 0, 0, 128,128, optx, opty)
+
+				if option_curselected == i then
+					gfx.blit(39, 1, 0, 0, 0, 128,128, optx, opty)
+				end
+			elseif options[i][3] == 'stepper' then
+				optx = optx + 38
+				gfx.blit(((options[i][4] == 1) and (option_curselected==i)) and 44 or 43, 1, 0, 0, 0, 128,128, optx, opty)
+
+				optx = optx - 53
+				gfx.blit((option_curselected == i) and 45 or 40, 1, 0, 0, 0, 128,128, optx, opty)
+
+				strx,stry = gfx.measurestr(options[i][2])
+				gfx.x = (optx + math.floor(53 / 2)) - math.floor(strx/2)
+				gfx.drawstr(options[i][2])
+
+				optx = optx - 53
+				gfx.blit(((options[i][4] == 0) and (option_curselected==i)) and 42 or 41, 1, 0, 0, 0, 128,128, optx, opty)
+			end
+		end
+
+		keybindrow1 = {
+			{46, 'Change Instrument'},
+			{47, 'Change Difficulty'},
+			{48, 'Change Snap'},
+			{49, 'Scroll Up/Down'}
+		}
+
+		keybindrow2 = {
+			{50, 'Scroll Through Options'},
+			{52, 'Change Option'},
+			{53, 'Show/Hide'}
+		}
+
+		for i=1, #keybindrow1 do
+			x = 30 - 5
+			y = 335 + (30 * (i - 1))
+
+			gfx.x = x
+			gfx.y = y + 16
+
+			gfx.blit(keybindrow1[i][1], 1, 0, 0, 0, 128, 128, x, y)
+			gfx.x = x + 59
+			gfx.drawstr(keybindrow1[i][2])
+		end
+
+		for i=1, #keybindrow2 do
+			x = 240 - 5
+			y = 335 + (30 * (i - 1))
+
+			gfx.x = x
+			gfx.y = y + 16
+
+			gfx.blit(keybindrow2[i][1], 1, 0, 0, 0, 128, 128, x, y)
+			gfx.x = x + 59
+			gfx.drawstr(keybindrow2[i][2])
+		end
 	end
 	gfx.update()
 end
